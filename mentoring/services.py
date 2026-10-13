@@ -1,5 +1,7 @@
 """All mentoring state transitions live here; views never change these models directly."""
 
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Q
@@ -8,6 +10,16 @@ from django.utils import timezone
 from .models import MentorProfile, MentoringRelationship, Notification
 
 ACTIVE = MentoringRelationship.Status.ACTIVE
+EXPIRED = MentoringRelationship.EndReason.EXPIRED
+
+
+def relationship_duration():
+    """How long a relationship lasts before it ends automatically (~4 months)."""
+    return timedelta(days=getattr(settings, "MENTORING_RELATIONSHIP_DURATION_DAYS", 120))
+
+
+def relationship_expires_at(rel):
+    return rel.started_at + relationship_duration()
 
 
 class MentoringError(Exception):
@@ -132,6 +144,45 @@ def end_relationship(rel, by_user, reason=""):
         return rel
     _end(rel, by_user, reason)
     return rel
+
+
+def _expire(rel, now):
+    """End one relationship because it reached the 4-month limit. Notifies both parties."""
+    rel.status = MentoringRelationship.Status.ENDED
+    rel.ended_at = now
+    rel.ended_by = None
+    rel.end_reason = EXPIRED
+    rel.save(update_fields=["status", "ended_at", "ended_by", "end_reason"])
+    _notify(
+        rel.mentor,
+        Notification.Kind.MATCH_ENDED,
+        f"Your mentoring relationship with {rel.mentee} ended automatically after 4 months.",
+        rel,
+    )
+    _notify(
+        rel.mentee,
+        Notification.Kind.MATCH_ENDED,
+        f"Your mentoring relationship with {rel.mentor} ended automatically after 4 months."
+        " You can choose another mentor whenever you like.",
+        rel,
+    )
+
+
+@transaction.atomic
+def expire_old_relationships(now=None):
+    """End every active relationship older than the 4-month limit. Returns count."""
+    now = now or timezone.now()
+    cutoff = now - relationship_duration()
+    expired_ids = list(
+        MentoringRelationship.objects.filter(status=ACTIVE, started_at__lte=cutoff).values_list(
+            "pk", flat=True
+        )
+    )
+    for pk in expired_ids:
+        rel = MentoringRelationship.objects.select_for_update().get(pk=pk)
+        if rel.is_active and rel.started_at <= cutoff:
+            _expire(rel, now)
+    return len(expired_ids)
 
 
 # --- Mentor pool -------------------------------------------------------------

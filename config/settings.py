@@ -120,6 +120,8 @@ DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "mentoring@localhost")
 
 # Mentoring program rules
 MAX_MENTEES_PER_MENTOR = int(os.environ.get("MAX_MENTEES_PER_MENTOR", 2))
+# Relationships automatically end after this long (~4 months).
+MENTORING_RELATIONSHIP_DURATION_DAYS = int(os.environ.get("MENTORING_RELATIONSHIP_DURATION_DAYS", 120))
 LOGIN_CODE_TTL_MINUTES = 10
 LOGIN_CODE_MAX_ATTEMPTS = 5
 LOGIN_CODE_RESEND_SECONDS = 60

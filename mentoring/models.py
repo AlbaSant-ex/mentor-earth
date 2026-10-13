@@ -90,6 +90,7 @@ class MentoringRelationship(models.Model):
         GOALS = "goals", "Goals achieved"
         MATCH = "match", "Not the right match"
         AVAILABILITY = "availability", "Availability changed"
+        EXPIRED = "expired", "Completed (4 months)"
         OTHER = "other", "Other"
 
     mentor = models.ForeignKey(
@@ -124,6 +125,24 @@ class MentoringRelationship(models.Model):
     @property
     def is_active(self):
         return self.status == self.Status.ACTIVE
+
+    @property
+    def expires_at(self):
+        """When this relationship ends automatically (~4 months after start)."""
+        from datetime import timedelta
+
+        from django.conf import settings as django_settings
+        from django.utils import timezone as tz
+
+        duration_days = getattr(django_settings, "MENTORING_RELATIONSHIP_DURATION_DAYS", 120)
+        started = self.started_at or tz.now()
+        return started + timedelta(days=duration_days)
+
+    @property
+    def is_expired(self):
+        from django.utils import timezone as tz
+
+        return self.is_active and tz.now() >= self.expires_at
 
     def other_party(self, user):
         return self.mentee if user.pk == self.mentor_id else self.mentor

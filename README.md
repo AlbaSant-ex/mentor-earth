@@ -8,6 +8,7 @@ Sistema de mentoría para un grupo de investigación, hecho con Django. Los ment
 - Elegir mentor es inmediato, sin paso de aprobación. Cada persona tiene como mucho un mentor a la vez.
 - Se puede ser mentor y mentorizado al mismo tiempo.
 - Cualquiera de los dos puede terminar la relación en cualquier momento, sin dar motivo.
+- Las relaciones terminan automáticamente a los 4 meses (`MENTORING_RELATIONSHIP_DURATION_DAYS`, 120 días). Ejecutar `manage.py expire_relationships` a diario (cron) para aplicar los vencimientos y avisar a ambas partes.
 - Un mentor puede pausar (mantiene sus mentorizados pero deja de aparecer en la búsqueda), dejar de ser mentor o abandonar el programa por completo.
 - Los mentores llenos o en pausa no aparecen en la búsqueda; al liberarse una plaza vuelven a aparecer solos.
 - Los datos de contacto solo se muestran dentro de una relación activa.
@@ -43,6 +44,7 @@ uv run manage.py test
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS` | consola | SMTP para enviar los códigos |
 | `DEFAULT_FROM_EMAIL` | `mentoring@localhost` | Remitente |
 | `MAX_MENTEES_PER_MENTOR` | `2` | Máximo de mentorizados por mentor |
+| `MENTORING_RELATIONSHIP_DURATION_DAYS` | `120` | Duración (~4 meses) antes del cierre automático |
 | `SQLITE_PATH`, `MEDIA_ROOT` | dentro del proyecto | Dónde guardar la base de datos y las fotos |
 
 En producción hay que ejecutar `collectstatic` y servir `staticfiles/` y `media/` desde el servidor web; Django solo los sirve con `DEBUG=true`.
