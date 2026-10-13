@@ -22,6 +22,16 @@ def relationship_expires_at(rel):
     return rel.started_at + relationship_duration()
 
 
+def active_cutoff(now=None):
+    """Relationships started at or before this are past the 4-month limit."""
+    return (now or timezone.now()) - relationship_duration()
+
+
+def active_filter(now=None):
+    """Q object matching only non-expired active relationships (no maintenance needed)."""
+    return Q(status=ACTIVE, started_at__gt=active_cutoff(now))
+
+
 class MentoringError(Exception):
     """A rule of the program prevents the requested action. The message is user-facing."""
 
@@ -48,29 +58,43 @@ def mentor_profile(user):
 
 
 def current_mentor_relationship(user):
+    expire_user_relationships(user)
     return (
-        MentoringRelationship.objects.filter(mentee=user, status=ACTIVE)
+        MentoringRelationship.objects.filter(mentee=user, status=ACTIVE, started_at__gt=active_cutoff())
         .select_related("mentor", "mentor__mentor_profile")
         .first()
     )
 
 
 def current_mentee_relationships(user):
-    return MentoringRelationship.objects.filter(mentor=user, status=ACTIVE).select_related("mentee")
+    expire_user_relationships(user)
+    return MentoringRelationship.objects.filter(
+        mentor=user, status=ACTIVE, started_at__gt=active_cutoff()
+    ).select_related("mentee")
 
 
 def available_mentors(for_user, research=None, stage=None):
     """Mentors `for_user` could choose right now, in random order."""
+    expire_user_relationships(for_user)
+    cutoff = active_cutoff()
     qs = (
         MentorProfile.objects.filter(status=MentorProfile.Status.ACTIVE, user__is_active=True)
         .annotate(
             n_active=Count(
-                "user__mentoring_as_mentor", filter=Q(user__mentoring_as_mentor__status=ACTIVE)
+                "user__mentoring_as_mentor",
+                filter=Q(
+                    user__mentoring_as_mentor__status=ACTIVE,
+                    user__mentoring_as_mentor__started_at__gt=cutoff,
+                ),
             )
         )
         .filter(n_active__lt=F("capacity"))
         .exclude(user=for_user)
-        .exclude(user__mentoring_as_mentor__mentee=for_user, user__mentoring_as_mentor__status=ACTIVE)
+        .exclude(
+            user__mentoring_as_mentor__mentee=for_user,
+            user__mentoring_as_mentor__status=ACTIVE,
+            user__mentoring_as_mentor__started_at__gt=cutoff,
+        )
         .select_related("user")
     )
     if research:
@@ -88,10 +112,15 @@ def choose_mentor(mentee, mentor):
     """Create an active relationship immediately; no approval step."""
     if mentee.pk == mentor.pk:
         raise MentoringError("You can't be your own mentor.")
+    # Zero-maintenance expiry: free places held by 4-month-old matches first.
+    expire_user_relationships(mentee)
+    expire_user_relationships(mentor)
     profile = _locked_profile(mentor)
     if profile is None or profile.status != MentorProfile.Status.ACTIVE:
         raise MentoringError(f"{mentor.first_name} isn't taking new mentees right now.")
-    if MentoringRelationship.objects.filter(mentee=mentee, status=ACTIVE).exists():
+    if MentoringRelationship.objects.filter(
+        mentee=mentee, status=ACTIVE, started_at__gt=active_cutoff()
+    ).exists():
         raise MentoringError(
             "You already have a mentor. End that mentoring relationship first to choose another."
         )
@@ -142,8 +171,31 @@ def end_relationship(rel, by_user, reason=""):
         raise MentoringError("You are not part of this mentoring relationship.")
     if not rel.is_active:
         return rel
+    if rel.started_at <= active_cutoff():
+        _expire(rel, timezone.now())
+        return rel
     _end(rel, by_user, reason)
     return rel
+
+
+@transaction.atomic
+def expire_user_relationships(user, now=None):
+    """End only this user's relationships past the 4-month limit. No cron needed.
+
+    Called lazily from reads/writes touching that user, so expiry happens
+    automatically on next page load. Returns count expired.
+    """
+    now = now or timezone.now()
+    cutoff = active_cutoff(now)
+    qs = MentoringRelationship.objects.filter(
+        Q(mentor=user) | Q(mentee=user), status=ACTIVE, started_at__lte=cutoff
+    )
+    ids = list(qs.values_list("pk", flat=True))
+    for pk in ids:
+        rel = MentoringRelationship.objects.select_for_update().get(pk=pk)
+        if rel.is_active and rel.started_at <= cutoff:
+            _expire(rel, now)
+    return len(ids)
 
 
 def _expire(rel, now):
@@ -170,7 +222,11 @@ def _expire(rel, now):
 
 @transaction.atomic
 def expire_old_relationships(now=None):
-    """End every active relationship older than the 4-month limit. Returns count."""
+    """End every active relationship older than the 4-month limit. Returns count.
+
+    Only needed for batch cleanup / cron. Normal reads already expire lazily
+    via expire_user_relationships(), so no maintenance is required.
+    """
     now = now or timezone.now()
     cutoff = now - relationship_duration()
     expired_ids = list(
@@ -240,6 +296,7 @@ def resume_mentoring(user):
 @transaction.atomic
 def stop_mentoring(user):
     """Leave the mentor pool and end every relationship where `user` is the mentor."""
+    expire_user_relationships(user)
     profile = _locked_profile(user)
     if profile is None or not profile.is_participating:
         return

@@ -54,8 +54,17 @@ class MentorProfile(models.Model):
     def active_mentee_count(self):
         if hasattr(self, "n_active"):
             return self.n_active
+        from datetime import timedelta
+
+        from django.conf import settings as django_settings
+        from django.utils import timezone as tz
+
+        duration_days = getattr(django_settings, "MENTORING_RELATIONSHIP_DURATION_DAYS", 120)
+        cutoff = tz.now() - timedelta(days=duration_days)
         return MentoringRelationship.objects.filter(
-            mentor_id=self.user_id, status=MentoringRelationship.Status.ACTIVE
+            mentor_id=self.user_id,
+            status=MentoringRelationship.Status.ACTIVE,
+            started_at__gt=cutoff,
         ).count()
 
     @property
@@ -143,6 +152,12 @@ class MentoringRelationship(models.Model):
         from django.utils import timezone as tz
 
         return self.is_active and tz.now() >= self.expires_at
+
+    @property
+    def days_remaining(self):
+        from django.utils import timezone as tz
+
+        return max((self.expires_at - tz.now()).days, 0)
 
     def other_party(self, user):
         return self.mentee if user.pk == self.mentor_id else self.mentor
